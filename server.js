@@ -1,0 +1,144 @@
+var fs=require('fs');
+var http=require('http');
+var express=require('express');
+var connect=require('connect');
+var app=express();
+var server=http.createServer(app);
+var mysql=require('mysql');
+var crypto=require('crypto');
+var bodyParser=require('body-parser');
+var cookieParser=require('cookie-parser');
+var session=require('express-session');
+var connection=mysql.createConnection({
+    host:'localhost',
+    user: 'root',
+    password: 'IamBatman',
+});
+app.use(bodyParser());
+app.use(cookieParser());
+app.use(session({secret:'keyboard cat',key:'sid',cookie:{secure: true },maxAge: new Date(Date.now()+3600000),expires: new Date(Date.now()+3600000)}));
+var common=require('./common.js');
+connection.connect(function(err){
+    if(err)
+    {
+        console.log("Error in connecting to MySQL "+err);
+        return;
+    }
+    console.log("Connected to MySQL");
+});
+var query=connection.query("USE presentMe",function(err,result){
+    if(err)
+    {
+	console.log("Could not connect to Database "+err);
+	return
+    }
+    console.log("Database Connection Established");
+});
+app.get('/main.js',function(req,res){
+    fs.readFile(__dirname+'/main.js',function(err,data){
+        if(err)
+        {
+            console.log("Error loading main js "+err);
+            return;
+        }
+        res.setHeader('Content-Type','application/javascript');
+	res.end(data);
+    });
+});
+
+app.get('/',function(req,res){
+    fs.readFile(__dirname+'/index.html',function(err,data){
+	if(err)
+	{
+	    console.log("Error loading Index "+err);
+	    return;
+	}
+	res.setHeader('Content-Type','text/html');
+	res.end(data);
+    });
+});
+app.post('/login',function(req,res){
+    if(req.body.loginName && req.body.loginPassword)
+    {
+	var name=req.body.loginName;
+	var password=crypto.createHash('md5').update(req.body.loginPassword).digest("hex");
+	common.authenticateUser(name,password,connection,function(loginResult){
+	    if(loginResult)
+	    {
+		req.session.userId=loginResult;
+		req.session.save(function(err){
+		    if(err)
+			console.log("Session error");
+		    console.log("session value is "+req.session.userId);
+		    res.redirect("/users/"+loginResult);
+		    res.end();
+		});
+	    }
+	    else
+	    {
+		res.redirect('/');
+		res.end();
+	    }
+	});
+    }
+});
+app.get('/users/:userId',function(req,res){
+    var requestId=req.params.userId;
+    var response="<html><head><title>PresentMe</title></head><body><form action='/new' method='POST'>Presentation Name<input type='text' name='newName' id='newName' /><input type='hidden' name='userId' value="+requestId+" /><input type='submit' value='Create New' /></form><ul id='myPresentations'>";
+    var getPresentationsQuery=connection.query("SELECT * FROM `app_presentations` WHERE `owner`=?",[requestId],function(err,results){
+	if(err)
+	{
+	    console.log("Error fetching presentations "+err);
+	    return;
+	}
+	for(var i=0;i<results.length;i++)
+	    response+="<li id="+results[i].id+"><a href=/presentations/"+results[i].id+">"+results[i].name+"</a></li>";
+	response+="</ul></body></html>";
+	res.setHeader('Content-Type','text/html');
+	res.end(response);
+    });
+});
+app.post('/new',function(req,res){
+    if(req.body.newName && req.body.userId)
+    {
+	var presentationName=req.body.newName;
+	var owner=req.body.userId;
+	var response="<html><head><title>presentMe</title><script type='text/javascript' src='main.js'></script></head><body><h1>"+presentationName+"</h1>";
+	var asssignOwnershipQuery=connection.query("INSERT INTO `app_presentations` (`name`,`owner`) VALUES(?,?)",[presentationName,owner],function(err,results){
+	    if(err)
+	    {
+		console.log("Error creating new Presentation, INSERT query on app_presentations "+err);
+		return;
+	    }
+	    var getNewId=connection.query("SELECT MAX(`id`) AS newId FROM `app_presentations` WHERE `owner`=?",[owner],function(err,results){
+		if(err)
+		{
+		    console.log("Error fetching new row in app_presentations "+err);
+		    return;
+		}
+		var presentationId=results[0].newId;
+		common.addSlide(presentationId,connection,function(){
+		    var getAllSlidesQuery=connection.query("SELECT * FROM `app_slides` WHERE `presentation`=?",[presentationId],function(err,results){
+			if(err)
+			{
+			    console.log("Error fetching Slides, SELECT query on app_slides "+err);
+			    return;
+			}
+			response+="<div id='slideListing'>";
+			for(var i=0;i<results.length-1;i++)
+			    response+="<div id="+results[i].id+">"+results[i].title+"<br />"+results[i].content+"</div>";
+			respose+="<div id='newSlide'>";
+			response+="<input type='text' name='newTitle' id='newTitle' value='Click to Add Title'/><br />";
+			response+="<textarea id='newContent' name='newContent'>Click to Add Content</textarea>";
+			response+="<input type='button' id='saveButton' value='Save!' onclick=\"saveSlide()\" />";
+			response+="</div></body></html>";
+			res.setHeader('Content-Type','text/html');
+			res.end(response);
+		    });
+		});
+	    });
+	});
+    }
+});
+app.listen(3000);
+console.log("Server is running");
